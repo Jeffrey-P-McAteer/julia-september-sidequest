@@ -7,6 +7,8 @@ deps/deps.jl
 # Build artifacts
 /Manifest.toml
 /LocalPreferences.toml
+*.db
+*.html
 
 # IDE files
 .vscode/
