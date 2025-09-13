@@ -41,8 +41,16 @@ julia analyze_data.jl
 
 **Output:**
 - Correlation analysis between CPU frequency and battery drain
-- Interactive PlotlyJS dashboard with multiple plots
-- HTML report saved as `hardware_analysis_dashboard.html`
+- Interactive PlotlyJS dashboard with 8 complementary visualizations:
+  1. Battery Level Over Time
+  2. CPU Frequency Over Time 
+  3. CPU Frequency vs Battery Drain Correlation (with polynomial fit)
+  4. Battery Drain Rate Over Time
+  5. Battery Drain by CPU Frequency Buckets
+  6. Battery Drain Distribution (Violin Plot)
+  7. CPU Instructions per 100% Battery Drain
+  8. Data Point Distribution by CPU Frequency (data quality indicator)
+- Individual HTML files for each visualization
 - Statistical insights and recommendations
 
 ## Configuration Options

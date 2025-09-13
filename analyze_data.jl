@@ -736,6 +736,104 @@ function create_instructions_per_battery_plot(df, window_df)
     return p_instructions
 end
 
+# DATA DISTRIBUTION VISUALIZATION
+# Purpose: Show number of data points in each CPU frequency bucket
+# Assumptions:
+#   - Users need to understand data distribution quality across frequency ranges
+#   - Buckets with few data points may have unreliable statistics
+#   - Same bucketing strategy ensures consistency with other visualizations
+# Reasoning: Data quality visualization helps users interpret other charts
+#   Shows which frequency ranges have sufficient data for reliable analysis
+function create_data_distribution_plot(df, window_df)
+    """
+    Create a bar chart showing the number of data points in each CPU frequency bucket.
+    Helps users understand data quality and distribution across frequency ranges.
+    """
+    # CONSISTENT DATA SOURCE: Same filtering as other bucketed plots
+    valid_data = df[completecases(df[!, [:cpu_frequency_ghz, :battery_drain_rate]]), :]
+    # Filter out zero drain values for consistency
+    valid_data = valid_data[valid_data.battery_drain_rate .> 0.01, :]
+    
+    if nrow(valid_data) == 0
+        return plot(Layout(
+            title="No Data Available for Distribution Analysis",
+            annotations=[attr(text="No valid data points found", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=false)]
+        ))
+    end
+    
+    freq_data = valid_data.cpu_frequency_ghz
+    
+    # ADAPTIVE BUCKET RANGE DETECTION (same as other plots)
+    min_freq = minimum(freq_data)
+    max_freq = maximum(freq_data)
+    
+    # BUCKET CONFIGURATION (same as other plots)
+    bucket_width = get_bucket_width()
+    bucket_start = floor(min_freq / bucket_width) * bucket_width
+    bucket_end = ceil(max_freq / bucket_width) * bucket_width
+    bucket_start = min(bucket_start, 0.5)
+    bucket_end = max(bucket_end, 4.0)
+    
+    bucket_edges = bucket_start:bucket_width:bucket_end
+    bucket_labels = ["$(round(i, digits=2))-$(round(i+bucket_width, digits=2))" for i in bucket_edges[1:end-1]]
+    
+    # COUNT DATA POINTS IN EACH BUCKET
+    bucket_counts = Int[]
+    bucket_percentages = Float64[]
+    total_points = length(freq_data)
+    
+    for i in 1:length(bucket_labels)
+        bucket_min = bucket_edges[i]
+        bucket_max = bucket_edges[i+1]
+        
+        # Count data points in this bucket
+        in_bucket = (freq_data .>= bucket_min) .& (freq_data .< bucket_max)
+        count = sum(in_bucket)
+        percentage = (count / total_points) * 100
+        
+        push!(bucket_counts, count)
+        push!(bucket_percentages, percentage)
+    end
+    
+    # DATA QUALITY COLOR CODING
+    # Purpose: Visually identify buckets with insufficient data
+    # Green: >5% of data (reliable), Yellow: 1-5% (caution), Red: <1% (unreliable)
+    colors = map(bucket_percentages) do pct
+        if pct >= 5.0
+            "green"      # Reliable data
+        elseif pct >= 1.0
+            "orange"     # Moderate data
+        else
+            "red"        # Insufficient data
+        end
+    end
+    
+    # BAR CHART VISUALIZATION
+    p_distribution = plot(
+        bar(
+            x=bucket_labels,
+            y=bucket_counts,
+            text=[count > 0 ? "$(count) pts\n($(round(pct, digits=1))%)" : "No data" 
+                  for (count, pct) in zip(bucket_counts, bucket_percentages)],
+            textposition="auto",
+            marker=attr(
+                color=colors,
+                line=attr(color="black", width=1)
+            ),
+            hovertemplate="CPU Frequency: %{x} GHz<br>Data Points: %{y}<br>Percentage: %{text}<extra></extra>"
+        ),
+        Layout(
+            title="Data Point Distribution by CPU Frequency<br><sub>$(bucket_width) GHz buckets - Green: >5% (reliable), Orange: 1-5% (moderate), Red: <1% (insufficient)</sub>",
+            xaxis_title="CPU Frequency Range (GHz)",
+            yaxis_title="Number of Data Points",
+            showlegend=false,
+            xaxis=attr(tickangle=45, tickfont=attr(size=10))
+        )
+    )
+    
+    return p_distribution
+end
+
 # COMPREHENSIVE VISUALIZATION DASHBOARD
 # Purpose: Create multiple complementary plots for thorough analysis
 # Assumptions:
@@ -888,30 +986,75 @@ function create_visualizations(df, correlation, valid_data, window_df=nothing)
         
         # POLYNOMIAL FIT ANALYSIS
         # Purpose: Fit 3rd-degree polynomial to reveal non-linear efficiency patterns
-        # Assumptions: CPU power consumption may have non-linear relationship with frequency
-        # Reasoning: Linear fits may miss important efficiency curves or saturation effects
-        if length(x_data) >= 4  # Minimum points required for stable cubic fit
-            x_vals = x_data
-            y_vals = y_data
+        # Strategy: Use original unbucketed data for fitting to get more data points,
+        #          but display bucketed data points for cleaner visualization
+        # Reasoning: Bucketed scatter points reduce visual noise, but more data points
+        #           improve polynomial fit accuracy and stability
+        
+        # USE ORIGINAL DATA FOR POLYNOMIAL FITTING (more data points)
+        fit_data = raw_valid_data[raw_valid_data.battery_drain_rate .> 0.01, :]
+        if nrow(fit_data) >= 4  # Need at least 4 points for cubic fit
+            fit_x = fit_data.cpu_frequency_ghz
+            fit_y = fit_data.battery_drain_rate
             
             try
                 # CUBIC POLYNOMIAL FITTING
                 # Purpose: Capture potential non-linear relationships (efficiency curves)
+                # Using original unbucketed data for more data points and better fit
                 degree = 3  # Fixed cubic degree for consistency
                 # Create Vandermonde matrix: [1, x, x^2, x^3] for each data point
-                A = hcat([x_vals.^i for i in 0:degree]...)
-                coeffs = A \ y_vals  # Least squares solution (minimizes squared residuals)
+                A = hcat([fit_x.^i for i in 0:degree]...)
+                coeffs = A \ fit_y  # Least squares solution (minimizes squared residuals)
                 
                 # GOODNESS OF FIT CALCULATION
                 # Purpose: Quantify how well polynomial explains the data
                 y_pred = A * coeffs
-                ss_res = sum((y_vals .- y_pred).^2)      # Sum of squared residuals
-                ss_tot = sum((y_vals .- mean(y_vals)).^2) # Total sum of squares
+                ss_res = sum((fit_y .- y_pred).^2)      # Sum of squared residuals
+                ss_tot = sum((fit_y .- mean(fit_y)).^2) # Total sum of squares
                 r_squared = 1 - (ss_res / ss_tot)        # Coefficient of determination
+                
+                # Determine fit quality description
+                fit_quality = if r_squared > 0.7
+                    "Strong"
+                elseif r_squared > 0.4
+                    "Moderate"
+                else
+                    "Weak"
+                end
+                
+                # PRINT POLYNOMIAL EQUATION TO STDOUT
+                # Purpose: Provide mathematical equation for further analysis or documentation
+                # Format: y = a0 + a1*x + a2*x^2 + a3*x^3
+                println("\n=== POLYNOMIAL FIT EQUATION ===")
+                println("CPU Frequency vs Battery Drain Rate (3rd degree polynomial):")
+                equation_parts = String[]
+                for i in 0:degree
+                    coeff = coeffs[i+1]
+                    if i == 0
+                        push!(equation_parts, "$(round(coeff, digits=6))")
+                    elseif i == 1
+                        sign = coeff >= 0 ? "+" : ""
+                        push!(equation_parts, "$(sign)$(round(coeff, digits=6))*x")
+                    else
+                        sign = coeff >= 0 ? "+" : ""
+                        push!(equation_parts, "$(sign)$(round(coeff, digits=6))*x^$(i)")
+                    end
+                end
+                equation = join(equation_parts, " ")
+                println("y = $(equation)")
+                println("Where:")
+                println("  x = CPU Frequency (GHz)")
+                println("  y = Battery Drain Rate (%/hour)")
+                println("  R^2 = $(round(r_squared, digits=4))")
+                println("  Quality: $(fit_quality)")
+                println("  Data points used for fit: $(length(fit_x))")
+                println("  Scatter points displayed: $(length(x_data))")
+                println("================================")
                 
                 # SMOOTH CURVE GENERATION
                 # Purpose: Create high-resolution curve for smooth visualization
-                x_min, x_max = extrema(x_vals)
+                # Use full data range for curve generation
+                x_min, x_max = extrema(fit_x)
                 x_range = x_max - x_min
                 x_smooth = range(x_min - 0.1*x_range, x_max + 0.1*x_range, length=100)  # 10% extension
                 
@@ -942,13 +1085,25 @@ function create_visualizations(df, correlation, valid_data, window_df=nothing)
                 
             catch e
                 println("Warning: 3rd degree polynomial fit failed: $e")
-                # Fallback to linear trend
-                x_mean = mean(x_vals)
-                y_mean = mean(y_vals)
-                slope = sum((x_vals .- x_mean) .* (y_vals .- y_mean)) / sum((x_vals .- x_mean).^2)
+                # Fallback to linear trend using fit data
+                x_mean = mean(fit_x)
+                y_mean = mean(fit_y)
+                slope = sum((fit_x .- x_mean) .* (fit_y .- y_mean)) / sum((fit_x .- x_mean).^2)
                 intercept = y_mean - slope * x_mean
                 
-                x_trend = [minimum(x_vals), maximum(x_vals)]
+                # PRINT LINEAR EQUATION TO STDOUT
+                println("\n=== LINEAR FIT EQUATION (FALLBACK) ===")
+                println("CPU Frequency vs Battery Drain Rate (linear):")
+                sign = intercept >= 0 ? "+" : ""
+                println("y = $(round(slope, digits=6))*x $(sign)$(round(intercept, digits=6))")
+                println("Where:")
+                println("  x = CPU Frequency (GHz)")
+                println("  y = Battery Drain Rate (%/hour)")
+                println("  Slope = $(round(slope, digits=6)) %/hour per GHz")
+                println("  Data points used for fit: $(length(fit_x))")
+                println("=======================================")
+                
+                x_trend = [minimum(fit_x), maximum(fit_x)]
                 y_trend = slope .* x_trend .+ intercept
                 
                 addtraces!(p3, scatter(
@@ -959,14 +1114,37 @@ function create_visualizations(df, correlation, valid_data, window_df=nothing)
                     line=attr(color="red", width=3, dash="dash")
                 ))
             end
-        elseif length(x_data) > 0
+        elseif nrow(fit_data) > 0 && length(x_data) > 0
             # Linear trend for very small datasets
-            x_vals = x_data
-            y_vals = y_data
+            # Use whatever data is available (prefer fit_data if available, otherwise use x_data)
+            if nrow(fit_data) >= 2
+                x_vals = fit_data.cpu_frequency_ghz
+                y_vals = fit_data.battery_drain_rate
+                data_source = "original data"
+                data_count = nrow(fit_data)
+            else
+                x_vals = x_data
+                y_vals = y_data
+                data_source = "bucketed data"
+                data_count = length(x_data)
+            end
+            
             x_mean = mean(x_vals)
             y_mean = mean(y_vals)
             slope = sum((x_vals .- x_mean) .* (y_vals .- y_mean)) / sum((x_vals .- x_mean).^2)
             intercept = y_mean - slope * x_mean
+            
+            # PRINT LINEAR EQUATION TO STDOUT (SMALL DATASET)
+            println("\n=== LINEAR FIT EQUATION (INSUFFICIENT DATA FOR POLYNOMIAL) ===")
+            println("CPU Frequency vs Battery Drain Rate (linear):")
+            sign = intercept >= 0 ? "+" : ""
+            println("y = $(round(slope, digits=6))*x $(sign)$(round(intercept, digits=6))")
+            println("Where:")
+            println("  x = CPU Frequency (GHz)")
+            println("  y = Battery Drain Rate (%/hour)")
+            println("  Slope = $(round(slope, digits=6)) %/hour per GHz")
+            println("  Note: Only $(data_count) $(data_source) points available")
+            println("===============================================================")
             
             x_trend = [minimum(x_vals), maximum(x_vals)]
             y_trend = slope .* x_trend .+ intercept
@@ -1049,6 +1227,9 @@ function create_visualizations(df, correlation, valid_data, window_df=nothing)
     # Plot 7: CPU instructions per 100% battery drain
     p7 = create_instructions_per_battery_plot(df, window_df)
     
+    # Plot 8: Data point distribution across CPU frequency buckets
+    p8 = create_data_distribution_plot(df, window_df)
+    
     # SILENT PLOT GENERATION
     # Purpose: Generate all visualizations without interrupting workflow with pop-ups
     # Reasoning: Batch generation is more efficient, pop-ups interrupt analysis flow
@@ -1060,6 +1241,7 @@ function create_visualizations(df, correlation, valid_data, window_df=nothing)
     println("5. Battery Drain by CPU Frequency Buckets - Generated")
     println("6. Battery Drain Distribution by CPU Frequency (Violin Plot) - Generated")
     println("7. CPU Instructions per 100% Battery Drain - Generated")
+    println("8. Data Point Distribution by CPU Frequency - Generated")
     
     # Try to create a simple 2x2 dashboard for the first 4 plots
     dashboard = [p1 p2; p3 p4]
@@ -1072,6 +1254,7 @@ function create_visualizations(df, correlation, valid_data, window_df=nothing)
     savefig(p5, "cpu_frequency_buckets.html")
     savefig(p6, "cpu_frequency_violin.html")
     savefig(p7, "cpu_instructions_per_battery.html")
+    savefig(p8, "data_point_distribution.html")
     
     try
         savefig(dashboard, "hardware_analysis_dashboard.html")
