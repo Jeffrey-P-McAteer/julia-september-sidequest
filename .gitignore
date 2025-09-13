@@ -1,0 +1,22 @@
+# Julia files
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+deps/deps.jl
+
+# Build artifacts
+/Manifest.toml
+/LocalPreferences.toml
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+*~
